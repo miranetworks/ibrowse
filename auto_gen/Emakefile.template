@@ -1,0 +1,3 @@
+{'src/*',      [%EXTRA_DEF% {outdir, "ebin"}, {i, "include"}]}.
+
+%EOF

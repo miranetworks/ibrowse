@@ -1,0 +1,26 @@
+{application, ibrowse,
+
+    [
+
+    {description, "ibrowse"},
+
+    {vsn, "%APP_DVER%"},
+
+    {id, "ibrowse"},
+
+    {modules,   [
+
+                %APP_MODULES%
+
+                ]
+    },
+
+    {registered, []},
+
+    {mod, {ibrowse_app, []}},
+
+    {applications, [kernel, stdlib]}
+
+    ]
+
+}.
