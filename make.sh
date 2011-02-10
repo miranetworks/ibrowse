@@ -12,6 +12,8 @@ fi
 
 source ${EXEDIR}/env
 
+mkdir -p ${EXEDIR}/ebin
+
 cat ${EXEDIR}/auto_gen/app.template | sed "s|%APP_NAME%|${APP_NAME}|g" | sed "s|%APP_DVER%|${APP_DVER}|g" | sed "s|%APP_MODULES%||g" > ${EXEDIR}/ebin/${APP_NAME}.app
 
 cat ${EXEDIR}/auto_gen/Emakefile.template | sed "s|%EXTRA_DEF%|${EXTRA_DEFS}|g" > ${EXEDIR}/Emakefile
@@ -22,7 +24,6 @@ WD=`pwd`
 
 cd ${EXEDIR}
 
-mkdir -p ${EXEDIR}/ebin
 
 $BINDIR/erl -noshell -make > make.sh.out
 

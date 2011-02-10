@@ -1,2 +1,10 @@
 *.beam
 *~
+/Emakefile
+/ebin/ibrowse.app
+/env
+/ibrowse_213_erts_574.boot
+/ibrowse_213_erts_574.rel
+/ibrowse_213_erts_574.script
+/ibrowse_213_erts_574.tar.gz
+/make.sh.out
