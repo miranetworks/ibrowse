@@ -17,7 +17,9 @@
          start_link/1,
          start/1,
          stop/1,
-         send_req/7
+         set_sticky_process/2,
+         send_req/7,
+         send_req_inf/7
         ]).
 
 -ifdef(debug).
@@ -38,6 +40,10 @@
 
 -record(state, {host, port, connect_timeout,
                 inactivity_timer_ref,
+
+                %++RJ longlived process ... will survive tcp_close etc ....
+                sticky_process = false,
+
                 use_proxy = false, proxy_auth_digest,
                 ssl_options = [], is_ssl = false, socket,
                 proxy_tunnel_setup = false,
@@ -92,10 +98,21 @@ stop(Conn_pid) ->
             ok
     end.
 
+set_sticky_process(Conn_Pid, Value) when (Value == true) or (Value == false) ->
+    gen_server:call(Conn_Pid, {set_sticky_process, Value}, infinity).
+
+
 send_req(Conn_Pid, Url, Headers, Method, Body, Options, Timeout) ->
     gen_server:call(
       Conn_Pid,
       {send_req, {Url, Headers, Method, Body, Options, Timeout}}, Timeout).
+
+
+send_req_inf(Conn_Pid, Url, Headers, Method, Body, Options, Timeout) ->
+    gen_server:call(
+      Conn_Pid,
+      {send_req, {Url, Headers, Method, Body, Options, Timeout}}, infinity).
+
 
 %%====================================================================
 %% Server functions
@@ -144,12 +161,30 @@ init({Host, Port}) ->
 %%--------------------------------------------------------------------
 %% Received a request when the remote server has already sent us a
 %% Connection: Close header
-handle_call({send_req, _}, _From, #state{is_closing = true} = State) ->
-    {reply, {error, connection_closing}, State};
+handle_call({send_req, {Url, Headers, Method, Body, Options, Timeout}}, From, #state{is_closing = true, sticky_process = StickyProcess} = State) ->
+
+    if StickyProcess ->
+
+        shutting_down(State),
+
+        do_close(State),
+
+        do_error_reply(State, closing_on_request),
+
+        send_req_1(From, Url, Headers, Method, Body, Options, Timeout, State#state{socket = undefined, host = undefined, port = undefined});
+
+    true ->
+        {reply, {error, connection_closing}, State}
+    end;
 
 handle_call({send_req, {Url, Headers, Method, Body, Options, Timeout}},
             From, State) ->
+
     send_req_1(From, Url, Headers, Method, Body, Options, Timeout, State);
+
+handle_call({set_sticky_process, Value}, _From, State) ->
+
+    {reply, ok, State#state{sticky_process = Value}};
 
 handle_call(stop, _From, State) ->
     do_close(State),
@@ -201,46 +236,73 @@ handle_info({stream_next, _Req_id}, State) ->
 %%               [_Req_id, _Cur_req_id]),
     {noreply, State};
 
-handle_info({stream_close, _Req_id}, State) ->
+handle_info({stream_close, _Req_id}, #state{sticky_process = StickyProcess} = State) ->
     shutting_down(State),
     do_close(State),
     do_error_reply(State, closing_on_request),
-    {stop, normal, State};
 
-handle_info({tcp_closed, _Sock}, State) ->    
+    if StickyProcess ->
+        {noreply, State#state{socket = undefined, reqs = queue:new()}};
+    true ->
+        {stop, normal, State}
+    end;
+
+handle_info({tcp_closed, _Sock}, #state{sticky_process = StickyProcess} = State) ->    
     do_trace("TCP connection closed by peer!~n", []),
     handle_sock_closed(State),
-    {stop, normal, State};
+
+    if StickyProcess ->
+        {noreply, State#state{socket = undefined, reqs = queue:new()}};
+    true ->
+        {stop, normal, State}
+    end;
+
 handle_info({ssl_closed, _Sock}, State) ->
     do_trace("SSL connection closed by peer!~n", []),
     handle_sock_closed(State),
+
     {stop, normal, State};
+
 
 handle_info({tcp_error, _Sock, Reason}, State) ->
     do_trace("Error on connection to ~1000.p:~1000.p -> ~1000.p~n",
              [State#state.host, State#state.port, Reason]),
     handle_sock_closed(State),
+
     {stop, normal, State};
+
 handle_info({ssl_error, _Sock, Reason}, State) ->
     do_trace("Error on SSL connection to ~1000.p:~1000.p -> ~1000.p~n",
              [State#state.host, State#state.port, Reason]),
     handle_sock_closed(State),
+
     {stop, normal, State};
 
 handle_info({req_timedout, From}, State) ->
     case lists:keymember(From, #request.from, queue:to_list(State#state.reqs)) of
-        false ->
-            {noreply, State};
-        true ->
-            shutting_down(State),
-            do_error_reply(State, req_timedout),
-            {stop, normal, State}
+    false ->
+
+        {noreply, State};
+
+    true ->
+
+        shutting_down(State),
+
+        do_error_reply(State, req_timedout),
+
+        {stop, normal, State}
+
     end;
 
 handle_info(timeout, State) ->
     do_trace("Inactivity timeout triggered. Shutting down connection~n", []),
+
     shutting_down(State),
+
+    do_close(State),
+
     do_error_reply(State, req_timedout),
+
     {stop, normal, State};
 
 handle_info({trace, Bool}, State) ->
@@ -588,7 +650,40 @@ check_ssl_options(Options, State) ->
             State#state{is_ssl=true, ssl_options=get_value(ssl_options, Options)}
     end.
 
+%++RJ patch start
 send_req_1(From,
+           #url{host = Host,
+                port = Port} = Url,
+           Headers, Method, Body, Options, Timeout,
+           #state{socket = Socket, host = CHost, port = CPort} = State) ->
+
+    case Socket of
+    undefined ->
+
+        send_req_2(From, Url, Headers, Method, Body, Options, Timeout, State);
+
+    _ ->
+
+        case {Host, Port} of
+        {CHost, CPort} ->
+            send_req_2(From, Url, Headers, Method, Body, Options, Timeout, State);
+
+        _ ->
+
+            do_trace("reconnecting to new host/port ~p~n", [{Host, Port}]),
+
+            shutting_down(State),           
+
+            do_close(State),
+
+            send_req_2(From, Url, Headers, Method, Body, Options, Timeout, State#state{socket = undefined, host = undefined, port = undefined})
+
+        end
+
+    end.
+%++RJ patch end
+ 
+send_req_2(From,
            #url{host = Host,
                 port = Port} = Url,
            Headers, Method, Body, Options, Timeout,
@@ -612,8 +707,8 @@ send_req_1(From,
         {ok, Sock} ->
             do_trace("Connected! Socket: ~1000.p~n", [Sock]),
             State_3 = State_2#state{socket = Sock,
-                                    connect_timeout = Conn_timeout},
-            send_req_1(From, Url, Headers, Method, Body, Options, Timeout, State_3);
+                                    connect_timeout = Conn_timeout, host = Host_1, port = Port_1},
+            send_req_2(From, Url, Headers, Method, Body, Options, Timeout, State_3);
         Err ->
             shutting_down(State_2),
             do_trace("Error connecting. Reason: ~1000.p~n", [Err]),
@@ -626,7 +721,7 @@ send_req_1(From,
 %% Upgrade to SSL connection
 %% Then send request
 
-send_req_1(From,
+send_req_2(From,
            #url{
                 host    = Server_host,
                 port    = Server_port
@@ -681,7 +776,7 @@ send_req_1(From,
             {stop, normal, State_1}
     end;
 
-send_req_1(From, Url, Headers, Method, Body, Options, Timeout, 
+send_req_2(From, Url, Headers, Method, Body, Options, Timeout, 
            #state{proxy_tunnel_setup = in_progress,
                   tunnel_setup_queue = Q} = State) ->
     do_trace("Queued SSL request awaiting tunnel setup: ~n"
@@ -690,7 +785,7 @@ send_req_1(From, Url, Headers, Method, Body, Options, Timeout,
              "Headers : ~p~n", [Url, Method, Headers]),
     {noreply, State#state{tunnel_setup_queue = [{From, Url, Headers, Method, Body, Options, Timeout} | Q]}};
 
-send_req_1(From,
+send_req_2(From,
            #url{abspath = AbsPath,
                 path    = RelPath} = Url,
            Headers, Method, Body, Options, Timeout,

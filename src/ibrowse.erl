@@ -86,6 +86,7 @@
          send_req_direct/5,
          send_req_direct/6,
          send_req_direct/7,
+         send_req_direct_inf/7,
          stream_next/1,
          stream_close/1,
          set_max_sessions/3,
@@ -441,6 +442,30 @@ do_send_req(Conn_Pid, Parsed_url, Headers, Method, Body, Options, Timeout) ->
             Ret
     end.
 
+do_send_req_inf(Conn_Pid, Parsed_url, Headers, Method, Body, Options, Timeout) ->
+    case catch ibrowse_http_client:send_req_inf(Conn_Pid, Parsed_url,
+                                            Headers, Method, ensure_bin(Body),
+                                            Options, Timeout) of
+        {'EXIT', {timeout, _}} ->
+            {error, req_timedout};
+        {'EXIT', {noproc, {gen_server, call, [Conn_Pid, _, _]}}} ->
+            {error, sel_conn_closed};
+        {error, connection_closed} ->
+            {error, sel_conn_closed};
+        {'EXIT', Reason} ->
+            {error, {'EXIT', Reason}};
+        {ok, St_code, Headers, Body} = Ret when is_binary(Body) ->
+            case get_value(response_format, Options, list) of
+                list ->
+                    {ok, St_code, Headers, binary_to_list(Body)};
+                binary ->
+                    Ret
+            end;
+        Ret ->
+            Ret
+    end.
+
+
 ensure_bin(L) when is_list(L)                     -> list_to_binary(L);
 ensure_bin(B) when is_binary(B)                   -> B;
 ensure_bin(Fun) when is_function(Fun)             -> Fun;
@@ -519,6 +544,22 @@ send_req_direct(Conn_pid, Url, Headers, Method, Body, Options, Timeout) ->
         Err ->
             {error, {url_parsing_failed, Err}}
     end.
+
+send_req_direct_inf(Conn_pid, Url, Headers, Method, Body, Options, Timeout) ->
+    case catch parse_url(Url) of
+        #url{host = Host,
+             port = Port} = Parsed_url ->
+            Options_1 = merge_options(Host, Port, Options),
+            case do_send_req_inf(Conn_pid, Parsed_url, Headers, Method, Body, Options_1, Timeout) of
+                {error, {'EXIT', {noproc, _}}} ->
+                    {error, worker_is_dead};
+                Ret ->
+                    Ret
+            end;
+        Err ->
+            {error, {url_parsing_failed, Err}}
+    end.
+
 
 %% @doc Tell ibrowse to stream the next chunk of data to the
 %% caller. Should be used in conjunction with the
