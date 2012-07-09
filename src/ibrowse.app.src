@@ -4,13 +4,11 @@
 
     {description, "ibrowse"},
 
-    {vsn, "%APP_DVER%"},
+    {vsn, "2.1.4"},
 
     {id, "ibrowse"},
 
     {modules,   [
-
-                %APP_MODULES%
 
                 ]
     },
@@ -19,7 +17,7 @@
 
     {mod, {ibrowse_app, []}},
 
-    {applications, [kernel, stdlib]}
+    {applications, [kernel, stdlib, odbc, crypto, public_key, ssl]}
 
     ]
 
