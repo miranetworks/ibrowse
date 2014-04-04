@@ -88,7 +88,8 @@ spawn_connection(Lb_pid, Url,
        is_integer(Max_pipeline_size),
        is_integer(Max_sessions) ->
     gen_server:call(Lb_pid,
-		    {spawn_connection, Url, Max_sessions, Max_pipeline_size, SSL_options, Process_options}).
+		    {spawn_connection, Url, Max_sessions, Max_pipeline_size, SSL_options, Process_options},
+                    infinity).
 
 stop(Lb_pid) ->
     case catch gen_server:call(Lb_pid, stop) of
